@@ -5,48 +5,11 @@ import win32gui
 import win32process
 from pypresence import Presence
 
-from data import read_str_short, read_uint
-
-classes = [
-    "DUMMY",
-    "Hatapon",
-    "Yarida",
-    "Taterazay",
-    "Yumiyacha",
-    "Kibadda",
-    "Dekapon",
-    "Megapon",
-    "Mahopon",
-    "Destrobo",
-    "Charipon",
-    "Chakapon",
-    "Piekron",
-    "Wooyari",
-    "Pyokorider",
-    "Cannassault",
-    "Charibasa",
-    "Guardira",
-    "Tondenga",
-    "Myamsar",
-    "Bowmunk",
-    "Grenburr",
-    "Alosson",
-    "Wondabarappa",
-    "Jamsch",
-    "Oohoroc",
-    "Pingrek",
-    "Cannogabang",
-    "Ravenous",
-    "Sonarchy",
-    "Ragewolf",
-    "Naughtyfins",
-    "Slogturtle",
-    "Covet Hiss",
-    "Buzzcrave",
-]
+from const import BASE, class_names, game_state_messages, overlay_files
+from data import read_str, read_str_short, read_uint
 
 
-def find_window_by_partial_title(partial_title):
+def find_window(partial_title):
     window_handle = None
     window_titles = []
 
@@ -62,8 +25,8 @@ def find_window_by_partial_title(partial_title):
     return window_handle, window_titles
 
 
-def get_game_base_address():
-    window_handle, window_titles = find_window_by_partial_title("PPSSPP")
+def get_process_data():
+    window_handle, window_titles = find_window("PPSSPP")
 
     if window_handle is not None:
         lower = win32gui.SendMessage(window_handle, 0xB118, 0, 2)
@@ -73,10 +36,9 @@ def get_game_base_address():
         )[1]
 
 
-def update_data():
+def get_game_data():
     print("# Updating data")
-    base_address, window_pid = get_game_base_address()
-    game_data = {}
+    base_address, window_pid = get_process_data()
 
     if base_address != 0x0:
         OpenProcess = ctypes.windll.kernel32.OpenProcess
@@ -120,39 +82,69 @@ def update_data():
         # Pointer to save pointer location
         base_data_pointer = read_uint(data, 0x2ABD94)
         print(f" - Base data pointer: {hex(base_data_pointer)}")
+        if base_data_pointer == 0x0:
+            return
+
+        game_data = {}
 
         # Pointer to savedata start
-        save_pointer = read_uint(data, base_data_pointer - 0x8800000 + 0x50)
+        save_pointer = read_uint(data, base_data_pointer - BASE + 0x50)
         print(f" - Save pointer: {hex(save_pointer)}")
 
         # Pointer to multiplayer start
-        multi_pointer = read_uint(data, base_data_pointer - 0x8800000 + 0x78)
+        multi_pointer = read_uint(data, base_data_pointer - BASE + 0x78)
         print(f" - Multi pointer: {hex(multi_pointer)}")
 
-        # Get current class
-        current_class = read_uint(data, save_pointer - 0x8800000 + 0x9520)
-        game_data["current_class"] = classes[current_class]
-        print(f" - Current class: {classes[current_class]}")
+        if save_pointer != 0x00:
+            # Get current class
+            current_class = read_uint(data, save_pointer - BASE + 0x9520)
+            game_data["current_class"] = class_names[current_class]
+            print(f" - Current class: {class_names[current_class]}")
 
-        # Get quest name
-        quest_name = read_str_short(data, multi_pointer - 0x8800000 + 0x9FC + 0x100)
-        game_data["current_quest"] = quest_name
-        print(f" - Current quest: {quest_name}")
+        if multi_pointer != 0x0:
+            # Get quest name
+            quest_name = read_str_short(data, multi_pointer - BASE + 0x9FC + 0x100)
+            game_data["current_quest"] = quest_name
+            print(f" - Current quest: {quest_name}")
+
+        # Get current overlay file
+        overlay_file = read_str(data, 0x08ABB1A0 - BASE)
+        print(f" - Overlay_file: {overlay_file}")
+        game_data["overlay_file"] = overlay_file
 
     return game_data
 
 
+def process_game_data(game_data):
+    overlay = game_data["overlay_file"]
+
+    if overlay == overlay_files["none"] or overlay == overlay_files["title"]:
+        detail = "In title"
+        state = None
+    elif overlay == overlay_files["azito"]:
+        detail = f"Class: {game_data['current_class']}"
+        state = f"{game_state_messages[overlay]}"
+    elif overlay == overlay_files["mission"]:
+        detail = f"Class: {game_data['current_class']}"
+        state = f"{game_state_messages[overlay]}: {game_data['current_quest']}"
+
+    return detail, state
+
+
 if __name__ == "__main__":
+    game_data = get_game_data()
     client_id = "1128592742314938458"
     RPC = Presence(client_id)
     RPC.connect()
 
-    while True:
-        data = update_data()
+    detail, state = process_game_data(game_data)
 
+    while True:
         RPC.update(
-            details=f"Playing {data['current_class']} ",
-            state=f"In quest: {data['current_quest']}",
+            details=detail,
+            state=state,
         )
 
         time.sleep(15)
+
+        game_data = get_game_data()
